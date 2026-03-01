@@ -1,24 +1,9 @@
-import cadquery as cq
-from cadquery import exporters
-import pandas as pd
-import os
-
-# === GRIDFINITY CONSTANTS ===
-GRID_UNIT = 42.0          # 42mm standard grid
-HEIGHT_UNIT = 7.0         # 7mm per vertical unit
-WALL_THICKNESS = 2.4
-FLOOR_THICKNESS = 2.0
-FILLET_RADIUS = 3.0
-
-OUTPUT_FOLDER = "generated_boxes"
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-
 def create_gridfinity_box(x_units, y_units, z_units):
     width = x_units * GRID_UNIT
     depth = y_units * GRID_UNIT
     height = z_units * HEIGHT_UNIT
 
+    # === Main outer body ===
     outer = (
         cq.Workplane("XY")
         .rect(width, depth)
@@ -27,6 +12,7 @@ def create_gridfinity_box(x_units, y_units, z_units):
         .fillet(FILLET_RADIUS)
     )
 
+    # === Hollow interior ===
     inner = (
         cq.Workplane("XY")
         .workplane(offset=FLOOR_THICKNESS)
@@ -37,55 +23,30 @@ def create_gridfinity_box(x_units, y_units, z_units):
 
     box = outer.cut(inner)
 
-    return box
+    # === Bottom Lip Profile (Accurate Gridfinity Geometry) ===
 
-
-def add_label(box, label, width, depth, height):
-    text = (
-        cq.Workplane("XY")
-        .workplane(offset=height - 1.0)
-        .text(label,
-              fontsize=min(width, depth) / 6,
-              distance=1.0,
-              cut=True)
+    lip_profile = (
+        cq.Workplane("XZ")
+        .workplane(offset=width/2)
+        .moveTo(0, 0)
+        .line(0.7, 0)                 # bottom flat
+        .line(1.8, 1.8)               # 45° upward
+        .line(0, 1.8)                 # vertical
+        .line(-2.15, 2.15)            # 45° taper inward
+        .line(-0.25, 0)               # top offset
+        .close()
     )
-    return box.union(text)
 
+    # Cut lip around perimeter
+    lip_cut = (
+        cq.Workplane("XY")
+        .rect(width, depth)
+        .extrude(5)  # enough to intersect
+    )
 
-def main(csv_file):
-    df = pd.read_csv(csv_file)
+    box = box.faces("<Z").workplane().rect(width, depth).extrude(-5)
 
-    combined = None
+    # Apply 45° chamfer to bottom outside edge
+    box = box.edges("|Z and <Z").chamfer(0.7)
 
-    for _, row in df.iterrows():
-        label = str(row["label"])
-        x_units = int(row["x_units"])
-        y_units = int(row["y_units"])
-        z_units = int(row["z_units"])
-
-        box = create_gridfinity_box(x_units, y_units, z_units)
-
-        width = x_units * GRID_UNIT
-        depth = y_units * GRID_UNIT
-        height = z_units * HEIGHT_UNIT
-
-        box = add_label(box, label, width, depth, height)
-
-        filename = f"{label}_{x_units}x{y_units}x{z_units}.stl"
-        filepath = os.path.join(OUTPUT_FOLDER, filename)
-
-        exporters.export(box, filepath)
-        print(f"Exported: {filepath}")
-
-        if combined is None:
-            combined = box
-        else:
-            combined = combined.translate((width + 5, 0, 0)).union(box)
-
-    if combined:
-        exporters.export(combined, os.path.join(OUTPUT_FOLDER, "all_boxes.stl"))
-        print("Exported combined STL")
-
-
-if __name__ == "__main__":
-    main("boxes.csv")
+    return box
